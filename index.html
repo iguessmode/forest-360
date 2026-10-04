@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Glowing Forest 360</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:system-ui,-apple-system,sans-serif;touch-action:none}
+canvas{display:block}
+.btn{position:fixed;z-index:2;border:0;border-radius:22px;padding:10px 16px;font-size:15px;color:#fff;background:rgba(20,30,50,.7);backdrop-filter:blur(6px)}
+#motion{bottom:20px;left:50%;transform:translateX(-50%)}
+#fs{top:14px;right:14px;padding:8px 12px}
+#hint{position:fixed;top:16px;left:50%;transform:translateX(-50%);color:#fff;background:rgba(0,0,0,.5);padding:7px 14px;border-radius:18px;font-size:14px;transition:opacity 1s;pointer-events:none;white-space:nowrap}
+#loading{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#9ff;font-size:16px}
+</style></head><body>
+<div id="loading">Loading the forest...</div>
+<div id="hint">Drag or move your phone to look around</div>
+<button id="motion" class="btn" style="display:none">Tap to look around by moving your phone</button>
+<button id="fs" class="btn">&#x26F6;</button>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1100);
+const geo = new THREE.SphereGeometry(500, 64, 40); geo.scale(-1,1,1);
+const mat = new THREE.MeshBasicMaterial({color:0x000000});
+scene.add(new THREE.Mesh(geo, mat));
+fetch('forest.b64').then(r=>r.text()).then(t=>{
+  new THREE.TextureLoader().load('data:image/jpeg;base64,'+t.replace(/\s/g,''), tex=>{
+    tex.colorSpace = THREE.SRGBColorSpace; mat.map = tex; mat.color.set(0xffffff); mat.needsUpdate = true;
+    document.getElementById('loading').remove();
+  });
+});
+
+let lon=0, lat=0, dragging=false, sx=0, sy=0, slon=0, slat=0, lastTouch=performance.now();
+let motionOn=false, devOri=null, screenOri=0, offsetLon=0;
+const el = renderer.domElement;
+el.addEventListener('pointerdown', e=>{dragging=true; sx=e.clientX; sy=e.clientY; slon=motionOn?offsetLon:lon; slat=lat; lastTouch=performance.now();});
+addEventListener('pointermove', e=>{ if(!dragging) return; const k=0.12*camera.fov/75;
+  const nl = slon + (sx-e.clientX)*k, nt = slat + (e.clientY-sy)*k;
+  if(motionOn){offsetLon=nl;} else {lon=nl; lat=nt;} lastTouch=performance.now();});
+addEventListener('pointerup', ()=>dragging=false);
+el.addEventListener('wheel', e=>{camera.fov=THREE.MathUtils.clamp(camera.fov+e.deltaY*0.05,30,100); camera.updateProjectionMatrix();});
+let pinch=0; el.addEventListener('touchmove', e=>{ if(e.touches.length===2){const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY); if(pinch){camera.fov=THREE.MathUtils.clamp(camera.fov-(d-pinch)*0.1,30,100); camera.updateProjectionMatrix();} pinch=d;}},{passive:true});
+el.addEventListener('touchend', ()=>pinch=0);
+
+const zee=new THREE.Vector3(0,0,1), euler=new THREE.Euler(), q0=new THREE.Quaternion(), q1=new THREE.Quaternion(-Math.sqrt(0.5),0,0,Math.sqrt(0.5));
+function setFromDevice(q, a, b, g, orient){ euler.set(b, a, -g, 'YXZ'); q.setFromEuler(euler); q.multiply(q1); q.multiply(q0.setFromAxisAngle(zee,-orient)); }
+function onOri(e){ if(e.alpha!==null) devOri=e; }
+function onScreen(){ screenOri = (screen.orientation && screen.orientation.angle) || window.orientation || 0; }
+addEventListener('orientationchange', onScreen); onScreen();
+const btn=document.getElementById('motion');
+function enableMotion(){ addEventListener('deviceorientation', onOri); motionOn=true; offsetLon=0; btn.textContent='Motion on (tap to turn off)'; }
+function disableMotion(){ removeEventListener('deviceorientation', onOri); motionOn=false; devOri=null; btn.textContent='Tap to look around by moving your phone'; }
+if ('DeviceOrientationEvent' in window && matchMedia('(pointer:coarse)').matches) btn.style.display='block';
+btn.onclick = async ()=>{
+  if(motionOn){disableMotion(); return;}
+  try{ if(typeof DeviceOrientationEvent.requestPermission==='function'){ const r=await DeviceOrientationEvent.requestPermission(); if(r!=='granted'){btn.textContent='Motion access was blocked'; return;} }
+    enableMotion(); }catch(err){ btn.textContent='Motion not available here'; }
+};
+document.getElementById('fs').onclick=()=>{ const d=document.documentElement; (d.requestFullscreen||d.webkitRequestFullscreen||(()=>{})).call(d); };
+setTimeout(()=>document.getElementById('hint').style.opacity=0, 5000);
+
+addEventListener('resize', ()=>{camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight);});
+const target=new THREE.Vector3(), yawQ=new THREE.Quaternion(), up=new THREE.Vector3(0,1,0);
+renderer.setAnimationLoop(()=>{
+  if(motionOn && devOri){
+    setFromDevice(camera.quaternion, THREE.MathUtils.degToRad(devOri.alpha), THREE.MathUtils.degToRad(devOri.beta), THREE.MathUtils.degToRad(devOri.gamma), THREE.MathUtils.degToRad(screenOri));
+    yawQ.setFromAxisAngle(up, THREE.MathUtils.degToRad(offsetLon)); camera.quaternion.premultiply(yawQ);
+  } else {
+    if(!dragging && performance.now()-lastTouch>4000) lon+=0.03;
+    lat=Math.max(-85,Math.min(85,lat));
+    const phi=THREE.MathUtils.degToRad(90-lat), th=THREE.MathUtils.degToRad(lon);
+    target.set(500*Math.sin(phi)*Math.cos(th),500*Math.cos(phi),500*Math.sin(phi)*Math.sin(th));
+    camera.lookAt(target);
+  }
+  renderer.render(scene,camera);
+});
+</script></body></html>
