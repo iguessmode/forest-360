@@ -71,17 +71,17 @@ export async function refine(frames, longFovGuess, opts = {}) {
       const a = m.get(0), b = m.get(1); if (a.distance > 0.78*b.distance) continue;
       const pa = A.pts[a.queryIdx], pb = B.pts[a.trainIdx];
       const wa = mulRv(fi.R, pixRay(pa[0], pa[1], fi.w, fi.h, txi, tyi)), wb = mulRv(fj.R, pixRay(pb[0], pb[1], fj.w, fj.h, txj, tyj));
-      if (wa[0]*wb[0] + wa[1]*wb[1] + wa[2]*wb[2] < Math.cos(15*D2R)) continue;
+      if (wa[0]*wb[0] + wa[1]*wb[1] + wa[2]*wb[2] < Math.cos(30*D2R)) continue;
       cand.push([pa, pb]);
     }
     knn.delete();
-    if (cand.length < 12) continue;
+    if (cand.length < 10) continue;
     const ma = cv.matFromArray(cand.length, 1, cv.CV_32FC2, cand.flatMap(c => c[0]));
     const mb = cv.matFromArray(cand.length, 1, cv.CV_32FC2, cand.flatMap(c => c[1]));
     const mask = new cv.Mat(); const H = cv.findHomography(ma, mb, cv.RANSAC, 4, mask);
     const inl = []; if (!H.empty()) for (let k = 0; k < cand.length; k++) if (mask.data[k]) inl.push(cand[k]);
     ma.delete(); mb.delete(); mask.delete(); H.delete();
-    if (inl.length >= 12) pairs.push({ i, j, m: inl });
+    if (inl.length >= 10) pairs.push({ i, j, m: inl });
     if (pairs.length % 8 === 0) await new Promise(r => setTimeout(r, 0));
   }
   bf.delete(); orb.delete(); empty.delete();
@@ -97,7 +97,7 @@ export async function refine(frames, longFovGuess, opts = {}) {
       pixRay(pb[0], pb[1], frames[p.j].w, frames[p.j].h, ...tans[p.j])]));
     const R = frames.map(f => f.R.slice());
     for (let s = 0; s < sweeps; s++) for (let i = 0; i < n; i++) {
-      if (deg[i] < 12) continue;
+      if (deg[i] < 10) continue;
       const S = new Array(9).fill(0);
       const add = (a, b, w) => { for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) S[r*3+c] += w*a[r]*b[c]; };
       pairs.forEach((p, k) => {
@@ -136,5 +136,5 @@ export async function refine(frames, longFovGuess, opts = {}) {
     const R = best ? best.R[i] : f.R, [tanX, tanY] = best ? best.tans[i] : [f.tanX, f.tanY];
     return { ...f, data, R, tanX, tanY };
   });
-  return { frames: out, fov: bestL, residual: best ? best.err : null, pairs: pairs.length };
+  return { frames: out, fov: bestL, residual: best ? best.err : null, pairs: pairs.length, aligned: deg.filter(d => d >= 10).length };
 }

@@ -36,6 +36,7 @@ a{color:#9ff}
     <button id="view" style="display:none">Look around in 360</button>
     <a id="dl" download="my-360.jpg" style="display:none"><button>Save image</button></a>
     <button id="again">Retake</button>
+    <button id="raw">Save raw photos</button>
   </div>
 </div>
 <script type="module">
@@ -126,22 +127,28 @@ async function finish() {
   if (stream) stream.getTracks().forEach(tr => tr.stop());
   $('result').style.display = 'flex'; $('view').style.display = 'none'; $('dl').style.display = 'none'; $('prev').removeAttribute('src');
   const W = 2048, H = 1024;
-  let use = frames;
+  let use = frames, note = '';
   try {
     $('rmsg').textContent = 'Lining up your photos...';
     const r = await refine(frames, LONG_FOV, { onProgress: m => { $('rmsg').textContent = m + '...'; } });
     use = r.frames;
-  } catch (e) { console.warn('alignment skipped', e); }
+    note = r.pairs ? `Lined up ${r.aligned} of ${frames.length} photos.` : 'Could not find matching details between photos.';
+  } catch (e) { note = 'Alignment did not run: ' + ((e && e.message) || e); }
   const px = await stitch(use, W, H, p => { $('rmsg').textContent = `Stitching your 360... ${Math.round(p*100)}%`; });
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   c.getContext('2d').putImageData(new ImageData(px, W, H), 0, 0);
   const url = c.toDataURL('image/jpeg', 0.9);
   $('prev').src = url; $('dl').href = url; $('dl').style.display = 'inline';
-  $('rmsg').textContent = 'Your 360 is ready!';
+  $('rmsg').textContent = 'Your 360 is ready! ' + note;
   try { sessionStorage.setItem('my360', url); $('view').style.display = 'inline'; }
-  catch (e) { $('rmsg').textContent = 'Your 360 is ready! Save it to keep it.'; }
+  catch (e) { $('rmsg').textContent = 'Your 360 is ready! Save it to keep it. ' + note; }
 }
 $('finish').onclick = finish;
+$('raw').onclick = () => {
+  const c = document.createElement('canvas'), x = c.getContext('2d');
+  const out = { v: 1, fov: LONG_FOV, ua: navigator.userAgent, frames: frames.map(f => { c.width = f.w; c.height = f.h; x.putImageData(new ImageData(new Uint8ClampedArray(f.data), f.w, f.h), 0, 0); return { w: f.w, h: f.h, R: Array.from(f.R), jpg: c.toDataURL('image/jpeg', 0.85) }; }) };
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' })); a.download = 'my-360-raw.json'; document.body.appendChild(a); a.click(); a.remove();
+};
 $('view').onclick = () => { location.href = 'index.html?mine=1'; };
 $('again').onclick = () => { $('result').style.display = 'none'; $('start').style.display = 'flex'; };
 </script></body></html>
