@@ -24,7 +24,7 @@ a{color:#9ff}
 <div id="bottom" class="panel"><button id="finish" disabled>Finish and stitch</button></div>
 <div id="start">
   <h2 style="margin:0">Take your own 360</h2>
-  <p>Stand in one spot and turn slowly in place, keeping your phone close to your chest. Line up the circle with each glowing dot and hold still. It snaps each photo by itself. Go all the way around, then up and down.</p>
+  <p>Hold your phone out in front of you and keep it in the same spot while you walk around it, like the phone is the center of a circle. Don't swing it around your body. Line up the circle with each glowing dot and hold still. It snaps each photo by itself. Go all the way around, then up and down.</p>
   <button id="go">Start</button>
   <p id="err" style="color:#f99"></p>
   <a href="index.html">Back to the forest</a>
@@ -40,6 +40,7 @@ a{color:#9ff}
 </div>
 <script type="module">
 import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js';
+import {refine} from './refine.js';
 const $ = id => document.getElementById(id);
 const LONG_FOV = +(new URLSearchParams(location.search).get('fov') || 64);
 const v = $('v'), ov = $('ov'), ctx = ov.getContext('2d');
@@ -125,7 +126,13 @@ async function finish() {
   if (stream) stream.getTracks().forEach(tr => tr.stop());
   $('result').style.display = 'flex'; $('view').style.display = 'none'; $('dl').style.display = 'none'; $('prev').removeAttribute('src');
   const W = 2048, H = 1024;
-  const px = await stitch(frames, W, H, p => { $('rmsg').textContent = `Stitching your 360... ${Math.round(p*100)}%`; });
+  let use = frames;
+  try {
+    $('rmsg').textContent = 'Lining up your photos...';
+    const r = await refine(frames, LONG_FOV, { onProgress: m => { $('rmsg').textContent = m + '...'; } });
+    use = r.frames;
+  } catch (e) { console.warn('alignment skipped', e); }
+  const px = await stitch(use, W, H, p => { $('rmsg').textContent = `Stitching your 360... ${Math.round(p*100)}%`; });
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   c.getContext('2d').putImageData(new ImageData(px, W, H), 0, 0);
   const url = c.toDataURL('image/jpeg', 0.9);

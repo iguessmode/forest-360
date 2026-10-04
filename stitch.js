@@ -32,9 +32,9 @@ export function dirFromYawPitch(yaw, pitch) {
 }
 export function makeTargets(yaw0) {
   const t = [];
-  for (let i = 0; i < 12; i++) t.push(dirFromYawPitch(yaw0 + i*30*D2R, 0));
-  for (let i = 0; i < 8; i++) t.push(dirFromYawPitch(yaw0 + (i*45+22.5)*D2R, 42*D2R));
-  for (let i = 0; i < 8; i++) t.push(dirFromYawPitch(yaw0 + (i*45+22.5)*D2R, -42*D2R));
+  for (let i = 0; i < 16; i++) t.push(dirFromYawPitch(yaw0 + i*22.5*D2R, 0));
+  for (let i = 0; i < 10; i++) t.push(dirFromYawPitch(yaw0 + (i*36+18)*D2R, 40*D2R));
+  for (let i = 0; i < 10; i++) t.push(dirFromYawPitch(yaw0 + (i*36+18)*D2R, -40*D2R));
   t.push(dirFromYawPitch(yaw0, 88*D2R));
   t.push(dirFromYawPitch(yaw0, -88*D2R));
   return t.map(d => ({ d, done: false }));
@@ -56,18 +56,27 @@ export async function stitch(frames, W, H, onProgress) {
     covered.fill(0);
     for (let px = 0; px < W; px++) {
       const dx = cosW[px]*st, dy = ct, dz = sinW[px]*st;
-      let r = 0, g = 0, b = 0, ws = 0;
+      let r = 0, g = 0, b = 0, ws = 0, near = null, nearDot = 0.55;
       for (const f of fw) {
-        if (dx*f.fx + dy*f.fy + dz*f.fz < 0.7) continue;
+        const fd = dx*f.fx + dy*f.fy + dz*f.fz;
+        if (fd > nearDot) { nearDot = fd; near = f; }
+        if (fd < 0.7) continue;
         const R = f.R;
         const lz = R[2]*dx + R[5]*dy + R[8]*dz;
         if (lz >= -0.05) continue;
         const xn = (R[0]*dx + R[3]*dy + R[6]*dz)/(-lz)/f.tanX;
         const yn = (R[1]*dx + R[4]*dy + R[7]*dz)/(-lz)/f.tanY;
         if (xn <= -1 || xn >= 1 || yn <= -1 || yn >= 1) continue;
-        let w = (1-xn*xn)*(1-yn*yn); w = w*w*w;
+        let w = (1-xn*xn)*(1-yn*yn); w = w*w; w = w*w; w = w*w;
         const ix = ((xn+1)*0.5*f.w)|0, iy = ((1-yn)*0.5*f.h)|0, k = (iy*f.w + ix)*4;
         r += f.data[k]*w; g += f.data[k+1]*w; b += f.data[k+2]*w; ws += w;
+      }
+      if (ws === 0 && near) { // small gap between photos: stretch the closest photo's edge instead of leaving a hole
+        const R = near.R, lz = Math.min(-0.05, R[2]*dx + R[5]*dy + R[8]*dz);
+        const xn = Math.max(-0.999, Math.min(0.999, (R[0]*dx + R[3]*dy + R[6]*dz)/(-lz)/near.tanX));
+        const yn = Math.max(-0.999, Math.min(0.999, (R[1]*dx + R[4]*dy + R[7]*dz)/(-lz)/near.tanY));
+        const ix = ((xn+1)*0.5*near.w)|0, iy = ((1-yn)*0.5*near.h)|0, k = (iy*near.w + ix)*4;
+        r = near.data[k]; g = near.data[k+1]; b = near.data[k+2]; ws = 1;
       }
       const o = (py*W + px)*4;
       if (ws > 0) { out[o] = r/ws; out[o+1] = g/ws; out[o+2] = b/ws; covered[px] = 1; rs += out[o]; gs += out[o+1]; bs += out[o+2]; n++; }
