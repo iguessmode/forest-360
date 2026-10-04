@@ -5,14 +5,16 @@
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:system-ui,-apple-system,sans-serif;touch-action:none}
 canvas{display:block}
-.btn{position:fixed;z-index:2;border:0;border-radius:22px;padding:10px 16px;font-size:15px;color:#fff;background:rgba(20,30,50,.7);backdrop-filter:blur(6px)}
+.btn{position:fixed;z-index:2;border:0;border-radius:22px;padding:10px 16px;font-size:15px;color:#fff;background:rgba(20,30,50,.7);backdrop-filter:blur(6px);text-decoration:none}
 #motion{bottom:20px;left:50%;transform:translateX(-50%)}
 #fs{top:14px;right:14px;padding:8px 12px}
-#hint{position:fixed;top:16px;left:50%;transform:translateX(-50%);color:#fff;background:rgba(0,0,0,.5);padding:7px 14px;border-radius:18px;font-size:14px;transition:opacity 1s;pointer-events:none;white-space:nowrap}
+#take{top:14px;left:14px;padding:8px 14px}
+#hint{position:fixed;top:64px;left:50%;transform:translateX(-50%);color:#fff;background:rgba(0,0,0,.5);padding:7px 14px;border-radius:18px;font-size:14px;transition:opacity 1s;pointer-events:none;white-space:nowrap}
 #loading{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#9ff;font-size:16px}
 </style></head><body>
-<div id="loading">Loading the forest...</div>
+<div id="loading">Loading...</div>
 <div id="hint">Drag or move your phone to look around</div>
+<a id="take" class="btn" href="capture.html">Take your own 360</a>
 <button id="motion" class="btn" style="display:none">Tap to look around by moving your phone</button>
 <button id="fs" class="btn">&#x26F6;</button>
 <script type="module">
@@ -26,12 +28,15 @@ const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1100
 const geo = new THREE.SphereGeometry(500, 64, 40); geo.scale(-1,1,1);
 const mat = new THREE.MeshBasicMaterial({color:0x000000});
 scene.add(new THREE.Mesh(geo, mat));
-fetch('forest.b64').then(r=>r.text()).then(t=>{
-  new THREE.TextureLoader().load('data:image/jpeg;base64,'+t.replace(/\s/g,''), tex=>{
+function applyTex(url){
+  new THREE.TextureLoader().load(url, tex=>{
     tex.colorSpace = THREE.SRGBColorSpace; mat.map = tex; mat.color.set(0xffffff); mat.needsUpdate = true;
-    document.getElementById('loading').remove();
+    const l = document.getElementById('loading'); if (l) l.remove();
   });
-});
+}
+const mine = new URLSearchParams(location.search).has('mine') ? sessionStorage.getItem('my360') : null;
+if (mine) applyTex(mine);
+else fetch('forest.b64').then(r=>r.text()).then(t=>applyTex('data:image/jpeg;base64,'+t.replace(/\s/g,'')));
 
 let lon=0, lat=0, dragging=false, sx=0, sy=0, slon=0, slat=0, lastTouch=performance.now();
 let motionOn=false, devOri=null, screenOri=0, offsetLon=0;
