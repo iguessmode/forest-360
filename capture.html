@@ -41,7 +41,7 @@ a{color:#9ff}
 </div>
 <script type="module">
 import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js';
-import {refine} from './refine.js';
+import {refine, preloadCv} from './refine.js';
 const $ = id => document.getElementById(id);
 const LONG_FOV = +(new URLSearchParams(location.search).get('fov') || 64);
 const v = $('v'), ov = $('ov'), ctx = ov.getContext('2d');
@@ -57,6 +57,7 @@ $('go').onclick = async () => {
       const r = await DeviceOrientationEvent.requestPermission();
       if (r !== 'granted') throw new Error('Motion access is needed so each photo lands in the right spot.');
     }
+    preloadCv().catch(() => {});
     addEventListener('deviceorientation', onOri);
     addEventListener('orientationchange', onScreen); onScreen();
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
@@ -130,7 +131,10 @@ async function finish() {
   let use = frames, note = '';
   try {
     $('rmsg').textContent = 'Lining up your photos...';
-    const r = await refine(frames, LONG_FOV, { onProgress: m => { $('rmsg').textContent = m + '...'; } });
+    const t0 = Date.now(); let last = 'Lining up your photos';
+    const tick = setInterval(() => { $('rmsg').textContent = `${last}... ${Math.round((Date.now()-t0)/1000)}s`; }, 1000);
+    const limit = new Promise((_, rej) => setTimeout(() => rej(new Error('it took too long, so I stitched without it')), 90000));
+    let r; try { r = await Promise.race([refine(frames, LONG_FOV, { onProgress: m => { last = m; } }), limit]); } finally { clearInterval(tick); }
     use = r.frames;
     note = r.pairs ? `Lined up ${r.aligned} of ${frames.length} photos.` : 'Could not find matching details between photos.';
   } catch (e) { note = 'Alignment did not run: ' + ((e && e.message) || e); }

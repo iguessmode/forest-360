@@ -30,21 +30,38 @@ function hornSolve(S, startR) {
 }
 function pixRay(x, y, w, h, tx, ty) { return norm3([(2*(x+0.5)/w - 1)*tx, (1 - 2*(y+0.5)/h)*ty, -1]); }
 
-async function loadCv(src) {
-  if (!window.cv) await new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Could not load the photo aligner')); document.head.appendChild(s); });
-  let cv = window.cv;
-  if (cv instanceof Promise) cv = await cv;
-  else if (!cv.Mat) await new Promise(r => { cv.onRuntimeInitialized = r; });
-  return cv;
+const CV_SOURCES = ['https://docs.opencv.org/4.x/opencv.js', 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js'];
+function loadScript(src) {
+  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.async = true; s.onload = res; s.onerror = () => rej(new Error('Could not load the photo aligner')); document.head.appendChild(s); });
+}
+let cvReady = null;
+// Start downloading the aligner early so it is ready when the photos are done.
+export function preloadCv() {
+  if (!cvReady) {
+    cvReady = (async () => {
+      if (!window.cv) { try { await loadScript(CV_SOURCES[0]); } catch (e) { await loadScript(CV_SOURCES[1]); } }
+      let cv = window.cv;
+      if (cv instanceof Promise) cv = await cv;
+      const t0 = Date.now();
+      while (!cv || !cv.Mat) {
+        if (Date.now() - t0 > 45000) throw new Error('the photo aligner took too long to start');
+        await new Promise(r => setTimeout(r, 100));
+        if (window.cv && window.cv.Mat) cv = window.cv;
+      }
+      return cv;
+    })();
+    cvReady.catch(() => { cvReady = null; });
+  }
+  return cvReady;
 }
 
 // frames: [{data, w, h, R, tanX, tanY}] with R from the motion sensor. Returns new frames with corrected R, lens and brightness.
 export async function refine(frames, longFovGuess, opts = {}) {
   const say = opts.onProgress || (() => {});
-  const cv = opts.cv || await loadCv(opts.cvSrc || 'https://docs.opencv.org/4.x/opencv.js');
+  const cv = opts.cv || await preloadCv();
   const n = frames.length; if (n < 2) return { frames, fov: longFovGuess, residual: null };
   say('Finding details in your photos');
-  const orb = new cv.ORB(1200), empty = new cv.Mat();
+  const orb = new cv.ORB(800), empty = new cv.Mat();
   const feats = [];
   for (let i = 0; i < n; i++) {
     const f = frames[i];
@@ -81,12 +98,13 @@ export async function refine(frames, longFovGuess, opts = {}) {
     const mask = new cv.Mat(); const H = cv.findHomography(ma, mb, cv.RANSAC, 4, mask);
     const inl = []; if (!H.empty()) for (let k = 0; k < cand.length; k++) if (mask.data[k]) inl.push(cand[k]);
     ma.delete(); mb.delete(); mask.delete(); H.delete();
-    if (inl.length >= 10) pairs.push({ i, j, m: inl });
+    if (inl.length >= 10) { const step = Math.max(1, inl.length/120); const m = []; for (let k = 0; k < inl.length; k += step) m.push(inl[Math.floor(k)]); pairs.push({ i, j, m }); }
     if (pairs.length % 8 === 0) await new Promise(r => setTimeout(r, 0));
   }
   bf.delete(); orb.delete(); empty.delete();
   const deg = new Array(n).fill(0); for (const p of pairs) { deg[p.i] += p.m.length; deg[p.j] += p.m.length; }
   const anchor = deg.indexOf(Math.max(...deg));
+  const byFrame = Array.from({ length: n }, () => []); pairs.forEach((p, k) => { byFrame[p.i].push(k); byFrame[p.j].push(k); });
   const UP = [0, 1, 0];
   const upLocal = frames.map(f => mulRtv(f.R, UP)); // gravity from the sensor is reliable; heading is not
 
@@ -100,11 +118,10 @@ export async function refine(frames, longFovGuess, opts = {}) {
       if (deg[i] < 10) continue;
       const S = new Array(9).fill(0);
       const add = (a, b, w) => { for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) S[r*3+c] += w*a[r]*b[c]; };
-      pairs.forEach((p, k) => {
-        if (p.i !== i && p.j !== i) return;
-        const other = p.i === i ? p.j : p.i;
+      for (const k of byFrame[i]) {
+        const p = pairs[k], other = p.i === i ? p.j : p.i;
         for (const [ra, rb] of rays[k]) { const mine = p.i === i ? ra : rb, theirs = p.i === i ? rb : ra; add(mine, mulRv(R[other], theirs), 1); }
-      });
+      }
       add(upLocal[i], UP, Math.max(8, deg[i]*0.15));
       if (i === anchor) { const f0 = frames[i].R; for (const e of [[1,0,0],[0,0,1]]) add(e, mulRv(f0, e), 20); }
       R[i] = hornSolve(S, R[i]);
@@ -116,9 +133,9 @@ export async function refine(frames, longFovGuess, opts = {}) {
   say('Lining everything up');
   let best = null, bestL = longFovGuess;
   if (pairs.length) {
-    for (let L = 44; L <= 80; L += 2) { const r = solve(L, 12); if (!best || r.err < best.err) { best = r; bestL = L; } await new Promise(r => setTimeout(r, 0)); }
-    for (let L = bestL - 1.5; L <= bestL + 1.5; L += 0.5) { const r = solve(L, 12); if (r.err < best.err) { best = r; bestL = L; } }
-    best = solve(bestL, 40);
+    for (let L = 44; L <= 80; L += 3) { const r = solve(L, 6); if (!best || r.err < best.err) { best = r; bestL = L; } await new Promise(r => setTimeout(r, 0)); }
+    const c0 = bestL; for (let L = c0 - 2; L <= c0 + 2; L += 1) { const r = solve(L, 10); if (r.err < best.err) { best = r; bestL = L; } await new Promise(r => setTimeout(r, 0)); }
+    best = solve(bestL, 30);
   }
   // brightness matching between overlapping photos
   const box = (g, x, y) => { let s = 0, c = 0; for (let yy = Math.max(0, (y|0)-3); yy <= Math.min(g.rows-1, (y|0)+3); yy++) for (let xx = Math.max(0, (x|0)-3); xx <= Math.min(g.cols-1, (x|0)+3); xx++) { s += g.data[yy*g.cols+xx]; c++; } return s/c + 1; };
