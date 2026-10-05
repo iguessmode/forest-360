@@ -43,49 +43,115 @@ export function cameraTans(w, h, longFovDeg) {
   const L = Math.tan(longFovDeg*D2R/2);
   return w >= h ? [L, L*h/w] : [L*w/h, L];
 }
-// frames: [{data, w, h, R, tanX, tanY}] -> RGBA equirectangular image (W x H)
+// frames: [{data, w, h, R, tanX, tanY}] -> RGBA equirectangular image (W x H).
+// Each spot is taken from ONE photo; the cuts between photos are moved to where neighbouring photos agree,
+// then softened over a few pixels. This avoids the doubled / ghosted look you get from averaging.
 export async function stitch(frames, W, H, onProgress) {
-  const out = new Uint8ClampedArray(W*H*4);
-  const fw = frames.map(f => ({ ...f, fx: -f.R[2], fy: -f.R[5], fz: -f.R[8] }));
-  const cosW = new Float64Array(W), sinW = new Float64Array(W);
-  for (let px = 0; px < W; px++) { const p = 2*Math.PI*(px+0.5)/W; cosW[px] = Math.cos(p); sinW[px] = Math.sin(p); }
-  const covered = new Uint8Array(W);
+  const say = p => { if (onProgress) onProgress(p); };
+  const yieldUI = () => new Promise(r => setTimeout(r, 0));
+  const F = frames.map(f => ({ ...f, fx: -f.R[2], fy: -f.R[5], fz: -f.R[8] }));
+  function proj(f, dx, dy, dz) { // -> [xn, yn] in -1..1 or null
+    if (dx*f.fx + dy*f.fy + dz*f.fz < 0.6) return null;
+    const R = f.R, lz = R[2]*dx + R[5]*dy + R[8]*dz; if (lz >= -0.05) return null;
+    const xn = (R[0]*dx + R[3]*dy + R[6]*dz)/(-lz)/f.tanX, yn = (R[1]*dx + R[4]*dy + R[7]*dz)/(-lz)/f.tanY;
+    return (xn <= -1 || xn >= 1 || yn <= -1 || yn >= 1) ? null : [xn, yn];
+  }
+  function sampleAt(f, xn, yn, out, o) { // bilinear
+    const x = (xn+1)*0.5*f.w - 0.5, y = (1-yn)*0.5*f.h - 0.5;
+    const x0 = Math.max(0, Math.min(f.w-2, Math.floor(x))), y0 = Math.max(0, Math.min(f.h-2, Math.floor(y)));
+    const ax = Math.max(0, Math.min(1, x-x0)), ay = Math.max(0, Math.min(1, y-y0)), d = f.data;
+    const k00 = (y0*f.w+x0)*4, k10 = k00+4, k01 = k00+f.w*4, k11 = k01+4;
+    for (let c = 0; c < 3; c++) out[o+c] = (d[k00+c]*(1-ax) + d[k10+c]*ax)*(1-ay) + (d[k01+c]*(1-ax) + d[k11+c]*ax)*ay;
+  }
+  // 1) low-res grid of candidate photos per cell
+  const S = 4, lw = Math.ceil(W/S), lh = Math.ceil(H/S), N = lw*lh;
+  const cand = new Array(N), tmp = new Float32Array(3);
+  for (let cy = 0; cy < lh; cy++) {
+    const th = Math.PI*(cy*S + S/2)/H, st = Math.sin(th), ct = Math.cos(th);
+    for (let cx = 0; cx < lw; cx++) {
+      const ph = 2*Math.PI*(cx*S + S/2)/W, dx = Math.cos(ph)*st, dy = ct, dz = Math.sin(ph)*st;
+      const list = [];
+      for (let i = 0; i < F.length; i++) {
+        const p = proj(F[i], dx, dy, dz); if (!p) continue;
+        sampleAt(F[i], p[0], p[1], tmp, 0);
+        list.push({ f: i, w: (1-p[0]*p[0])*(1-p[1]*p[1]), r: tmp[0], g: tmp[1], b: tmp[2] });
+      }
+      cand[cy*lw + cx] = list;
+    }
+    if (cy % 16 === 0) { say(0.15*cy/lh); await yieldUI(); }
+  }
+  // 2) choose one photo per cell: prefer photo centres and what most photos agree on (drops things that moved),
+  //    and move cuts to where photos agree
+  for (const list of cand) if (list.length >= 3) {
+    const med = ['r', 'g', 'b'].map(ch => { const v = list.map(c => c[ch]).sort((a, b) => a - b); return v[v.length >> 1]; });
+    for (const c of list) c.dev = Math.abs(c.r-med[0]) + Math.abs(c.g-med[1]) + Math.abs(c.b-med[2]);
+  }
+  const label = new Int32Array(N).fill(-1);
+  for (let k = 0; k < N; k++) { let b = -1, bw = -Infinity; for (const c of cand[k]) { const sc = c.w - (c.dev ? Math.min(c.dev, 400)/300 : 0); if (sc > bw) { bw = sc; b = c.f; } } label[k] = b; }
+  const colorOf = (k, f) => { for (const c of cand[k]) if (c.f === f) return c; return null; };
+  const diff = (a, b) => Math.abs(a.r-b.r) + Math.abs(a.g-b.g) + Math.abs(a.b-b.b);
+  const MISS = 400, DATA = 90;
+  const pairCost = (k, q, lk, lq) => {
+    if (lk === lq || lq < 0) return 0;
+    const a1 = colorOf(k, lk), b1 = colorOf(k, lq), a2 = colorOf(q, lk), b2 = colorOf(q, lq);
+    return (a1 && b1 ? diff(a1, b1) : MISS) + (a2 && b2 ? diff(a2, b2) : MISS);
+  };
+  for (let pass = 0; pass < 8; pass++) {
+    const fwd = pass % 2 === 0;
+    for (let n = 0; n < N; n++) {
+      const k = fwd ? n : N-1-n, list = cand[k]; if (list.length < 2) continue;
+      const cx = k % lw, cy = (k - cx)/lw;
+      const nb = [cy*lw + (cx+1) % lw, cy*lw + (cx-1+lw) % lw];
+      if (cy > 0) nb.push(k - lw); if (cy < lh-1) nb.push(k + lw);
+      let best = label[k], bestC = Infinity;
+      for (const c of list) {
+        let cost = DATA*(1 - c.w) + (c.dev ? 0.6*Math.min(c.dev, 400) : 0);
+        for (const q of nb) cost += pairCost(k, q, c.f, label[q]);
+        if (cost < bestC) { bestC = cost; best = c.f; }
+      }
+      label[k] = best;
+    }
+    say(0.15 + 0.25*(pass+1)/8); await yieldUI();
+  }
+  // 3) soften each cut over a few pixels
+  const R2 = 2, soft = new Array(N);
+  for (let cy = 0; cy < lh; cy++) for (let cx = 0; cx < lw; cx++) {
+    const k = cy*lw + cx, m = new Map(); let tot = 0;
+    for (let oy = -R2; oy <= R2; oy++) {
+      const yy = cy + oy; if (yy < 0 || yy >= lh) continue;
+      for (let ox = -R2; ox <= R2; ox++) {
+        const l = label[yy*lw + (cx+ox+lw) % lw]; if (l < 0 || !colorOf(k, l)) continue;
+        m.set(l, (m.get(l) || 0) + 1); tot++;
+      }
+    }
+    soft[k] = tot ? [...m].map(([f, c]) => [f, c/tot]) : null;
+  }
+  // 4) full-resolution render
+  const out = new Uint8ClampedArray(W*H*4), px3 = new Float32Array(3);
   for (let py = 0; py < H; py++) {
-    const th = Math.PI*(py+0.5)/H, st = Math.sin(th), ct = Math.cos(th);
-    let rs = 0, gs = 0, bs = 0, n = 0;
-    covered.fill(0);
+    const th = Math.PI*(py+0.5)/H, st = Math.sin(th), ct = Math.cos(th), cy = Math.min(lh-1, (py/S)|0);
+    let rs = 0, gs = 0, bs = 0, cnt = 0; const miss = [];
     for (let px = 0; px < W; px++) {
-      const dx = cosW[px]*st, dy = ct, dz = sinW[px]*st;
-      let r = 0, g = 0, b = 0, ws = 0, near = null, nearDot = 0.55;
-      for (const f of fw) {
-        const fd = dx*f.fx + dy*f.fy + dz*f.fz;
-        if (fd > nearDot) { nearDot = fd; near = f; }
-        if (fd < 0.7) continue;
-        const R = f.R;
-        const lz = R[2]*dx + R[5]*dy + R[8]*dz;
-        if (lz >= -0.05) continue;
-        const xn = (R[0]*dx + R[3]*dy + R[6]*dz)/(-lz)/f.tanX;
-        const yn = (R[1]*dx + R[4]*dy + R[7]*dz)/(-lz)/f.tanY;
-        if (xn <= -1 || xn >= 1 || yn <= -1 || yn >= 1) continue;
-        let w = (1-xn*xn)*(1-yn*yn); w = w*w; w = w*w; w = w*w;
-        const ix = ((xn+1)*0.5*f.w)|0, iy = ((1-yn)*0.5*f.h)|0, k = (iy*f.w + ix)*4;
-        r += f.data[k]*w; g += f.data[k+1]*w; b += f.data[k+2]*w; ws += w;
+      const ph = 2*Math.PI*(px+0.5)/W, dx = Math.cos(ph)*st, dy = ct, dz = Math.sin(ph)*st;
+      const o = (py*W + px)*4, sw = soft[cy*lw + Math.min(lw-1, (px/S)|0)];
+      let r = 0, g = 0, b = 0, ws = 0;
+      if (sw) for (const [fi, w] of sw) { const p = proj(F[fi], dx, dy, dz); if (!p) continue; sampleAt(F[fi], p[0], p[1], px3, 0); r += px3[0]*w; g += px3[1]*w; b += px3[2]*w; ws += w; }
+      if (ws === 0) { // gap: use the nearest photo, stretched
+        let nf = null, nd = 0.5; for (const f of F) { const d = dx*f.fx + dy*f.fy + dz*f.fz; if (d > nd) { nd = d; nf = f; } }
+        if (nf) {
+          const R = nf.R, lz = Math.min(-0.05, R[2]*dx + R[5]*dy + R[8]*dz);
+          const xn = Math.max(-0.999, Math.min(0.999, (R[0]*dx + R[3]*dy + R[6]*dz)/(-lz)/nf.tanX));
+          const yn = Math.max(-0.999, Math.min(0.999, (R[1]*dx + R[4]*dy + R[7]*dz)/(-lz)/nf.tanY));
+          sampleAt(nf, xn, yn, px3, 0); r = px3[0]; g = px3[1]; b = px3[2]; ws = 1;
+        }
       }
-      if (ws === 0 && near) { // small gap between photos: stretch the closest photo's edge instead of leaving a hole
-        const R = near.R, lz = Math.min(-0.05, R[2]*dx + R[5]*dy + R[8]*dz);
-        const xn = Math.max(-0.999, Math.min(0.999, (R[0]*dx + R[3]*dy + R[6]*dz)/(-lz)/near.tanX));
-        const yn = Math.max(-0.999, Math.min(0.999, (R[1]*dx + R[4]*dy + R[7]*dz)/(-lz)/near.tanY));
-        const ix = ((xn+1)*0.5*near.w)|0, iy = ((1-yn)*0.5*near.h)|0, k = (iy*near.w + ix)*4;
-        r = near.data[k]; g = near.data[k+1]; b = near.data[k+2]; ws = 1;
-      }
-      const o = (py*W + px)*4;
-      if (ws > 0) { out[o] = r/ws; out[o+1] = g/ws; out[o+2] = b/ws; covered[px] = 1; rs += out[o]; gs += out[o+1]; bs += out[o+2]; n++; }
+      if (ws > 0) { out[o] = r/ws; out[o+1] = g/ws; out[o+2] = b/ws; rs += out[o]; gs += out[o+1]; bs += out[o+2]; cnt++; } else miss.push(o);
       out[o+3] = 255;
     }
-    const ar = n ? rs/n : 12, ag = n ? gs/n : 14, ab = n ? bs/n : 22;
-    for (let px = 0; px < W; px++) if (!covered[px]) { const o = (py*W + px)*4; out[o] = ar; out[o+1] = ag; out[o+2] = ab; }
-    if (py % 32 === 0) { if (onProgress) onProgress(py/H); await new Promise(r => setTimeout(r, 0)); }
+    const ar = cnt ? rs/cnt : 12, ag = cnt ? gs/cnt : 14, ab = cnt ? bs/cnt : 22;
+    for (const o of miss) { out[o] = ar; out[o+1] = ag; out[o+2] = ab; }
+    if (py % 32 === 0) { say(0.4 + 0.6*py/H); await yieldUI(); }
   }
-  if (onProgress) onProgress(1);
+  say(1);
   return out;
 }
