@@ -41,7 +41,7 @@ a{color:#9ff}
 </div>
 <script type="module">
 import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js';
-import {refine, preloadCv} from './refine.js';
+import {refine} from './refine.js';
 const $ = id => document.getElementById(id);
 const LONG_FOV = +(new URLSearchParams(location.search).get('fov') || 64);
 const v = $('v'), ov = $('ov'), ctx = ov.getContext('2d');
@@ -57,7 +57,6 @@ $('go').onclick = async () => {
       const r = await DeviceOrientationEvent.requestPermission();
       if (r !== 'granted') throw new Error('Motion access is needed so each photo lands in the right spot.');
     }
-    preloadCv().catch(() => {});
     addEventListener('deviceorientation', onOri);
     addEventListener('orientationchange', onScreen); onScreen();
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
