@@ -41,7 +41,6 @@ a{color:#9ff}
 </div>
 <script type="module">
 import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js';
-import {refine} from './refine.js';
 const $ = id => document.getElementById(id);
 let LONG_FOV = +(new URLSearchParams(location.search).get('fov') || 64), wide = false;
 const v = $('v'), ov = $('ov'), ctx = ov.getContext('2d');
@@ -139,16 +138,7 @@ async function finish() {
   if (stream) stream.getTracks().forEach(tr => tr.stop());
   $('result').style.display = 'flex'; $('view').style.display = 'none'; $('dl').style.display = 'none'; $('prev').removeAttribute('src');
   const W = 2048, H = 1024;
-  let use = frames, note = '';
-  try {
-    $('rmsg').textContent = 'Lining up your photos...';
-    const t0 = Date.now(); let last = 'Lining up your photos';
-    const tick = setInterval(() => { $('rmsg').textContent = `${last}... ${Math.round((Date.now()-t0)/1000)}s`; }, 1000);
-    const limit = new Promise((_, rej) => setTimeout(() => rej(new Error('it took too long, so I stitched without it')), 90000));
-    let r; try { r = await Promise.race([refine(frames, LONG_FOV, { onProgress: m => { last = m; } }), limit]); } finally { clearInterval(tick); }
-    use = r.frames;
-    note = (r.pairs ? `Lined up ${r.aligned} of ${frames.length} photos.` : 'Could not find matching details between photos.') + (wide ? '' : ' Your phone has no ultra wide lens, so there may be gaps.');
-  } catch (e) { note = 'Alignment did not run: ' + ((e && e.message) || e); }
+  const use = frames, note = wide ? '' : 'Your phone has no ultra wide lens, so there may be gaps.';
   const px = await stitch(use, W, H, p => { $('rmsg').textContent = `Stitching your 360... ${Math.round(p*100)}%`; });
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   c.getContext('2d').putImageData(new ImageData(px, W, H), 0, 0);
