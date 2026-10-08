@@ -17,14 +17,17 @@ button:disabled{opacity:.4}
 #result img{max-width:100%;max-height:45vh;border-radius:8px}
 .row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
 a{color:#9ff}
+#guide{position:fixed;left:50%;top:62%;transform:translateX(-50%);font-size:22px;font-weight:600;background:rgba(0,0,0,.6);padding:8px 16px;border-radius:18px;z-index:2;white-space:nowrap}
+#guide:empty{display:none}
 </style></head><body>
 <video id="v" playsinline muted autoplay></video>
 <canvas id="ov"></canvas>
 <div id="top" class="panel">Line up the circle with the glowing dot</div>
+<div id="guide"></div>
 <div id="bottom" class="panel"><button id="finish" disabled>Finish and stitch</button></div>
 <div id="start">
   <h2 style="margin:0">Take your own 360</h2>
-  <p>11 quick shots: 5 around you, 3 tilted up and 3 tilted down, so the top and bottom join up. Hold your phone upright, keep it in the same spot and turn yourself around it. Line up the circle with each glowing dot and hold still. It snaps each photo by itself.</p>
+  <p>11 quick shots: 5 around you, 3 tilted up and 3 tilted down, so the top and bottom join up. Hold your phone upright, keep it in the same spot and turn yourself around it. Line up the circle with each glowing dot and hold still. Follow the words on screen (turn, tilt, move a little left, right, up or down). It only snaps when the picture lines up with the last one.</p>
   <button id="go">Start</button>
   <p id="err" style="color:#f99"></p>
   <a href="index.html">Back to the forest</a>
@@ -40,10 +43,20 @@ a{color:#9ff}
   </div>
 </div>
 <script type="module">
-import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js?v=11';
+import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js?v=12';
+import {LW, checkAlign, correctR} from './align.js?v=12';
 const $ = id => document.getElementById(id);
 let LONG_FOV = +(new URLSearchParams(location.search).get('fov') || 64), wide = false;
 const v = $('v'), ov = $('ov'), ctx = ov.getContext('2d');
+let refs = [], lastAlign = null, lastAlignT = 0;
+const sm = document.createElement('canvas'), smx = sm.getContext('2d', { willReadFrequently: true });
+function smallGray(src, w, h) {
+  const gw = LW, gh = Math.round(LW*h/w); sm.width = gw; sm.height = gh; smx.drawImage(src, 0, 0, gw, gh);
+  const d = smx.getImageData(0, 0, gw, gh).data, g = new Float32Array(gw*gh);
+  for (let i = 0; i < g.length; i++) g[i] = d[i*4]*0.3 + d[i*4+1]*0.59 + d[i*4+2]*0.11;
+  return { g, gw, gh };
+}
+function liveGray() { const [tanX, tanY] = cameraTans(v.videoWidth, v.videoHeight, LONG_FOV); return { ...smallGray(v, v.videoWidth, v.videoHeight), tanX, tanY }; }
 let ori = null, screenAngle = 0, targets = [], frames = [], hist = [], running = false, lastShot = 0, flash = 0, stream = null;
 const grab = document.createElement('canvas'), gctx = grab.getContext('2d', { willReadFrequently: true });
 function onOri(e){ if (e.alpha !== null) ori = e; }
@@ -70,7 +83,7 @@ $('go').onclick = async () => {
       }
     } catch (e) { console.warn('ultra wide not available', e); }
     v.srcObject = stream; await v.play();
-    targets = []; frames = []; hist = [];
+    targets = []; frames = []; hist = []; refs = []; lastAlign = null;
     $('start').style.display = 'none'; running = true; requestAnimationFrame(loop);
     setTimeout(() => { if (!ori) $('top').textContent = 'No motion sensor found. Try on a phone.'; }, 2500);
   } catch (err) { $('err').textContent = (err && err.message) || 'Could not start the camera.'; }
@@ -82,6 +95,15 @@ function capture(R) {
   grab.width = w; grab.height = h; gctx.drawImage(v, 0, 0, w, h);
   const [tanX, tanY] = cameraTans(w, h, LONG_FOV);
   frames.push({ data: gctx.getImageData(0, 0, w, h).data, w, h, R, tanX, tanY });
+  refs.push({ ...smallGray(grab, w, h), R, tanX, tanY });
+  if (frames.length === 1) { // keep brightness and colour the same for the rest of the shots, where the phone allows it
+    try {
+      const tr = stream.getVideoTracks()[0], cap = tr.getCapabilities ? tr.getCapabilities() : {}, adv = {};
+      if ((cap.exposureMode || []).includes('manual')) adv.exposureMode = 'manual';
+      if ((cap.whiteBalanceMode || []).includes('manual')) adv.whiteBalanceMode = 'manual';
+      if (Object.keys(adv).length) tr.applyConstraints({ advanced: [adv] }).catch(() => {});
+    } catch (e) {}
+  }
 }
 
 function loop(t) {
@@ -107,6 +129,9 @@ function loop(t) {
       ctx.fillStyle = tg.done ? 'rgba(80,255,140,.8)' : 'rgba(80,240,255,.9)';
       ctx.shadowColor = '#5ff'; ctx.shadowBlur = tg.done ? 0 : 18; ctx.fill(); ctx.shadowBlur = 0;
     }
+    const up = toLocal(R, [0, 1, 0]), roll = Math.atan2(up[0], up[1]);
+    const rollOk = Math.hypot(up[0], up[1]) < 0.2 || Math.abs(roll) < 7*D2R;
+    let guide = '';
     if (best) {
       const l = toLocal(R, best.d);
       const onScreen = l[2] < -0.1 && Math.abs((l[0]/-l[2])/sTanX) < 0.9 && Math.abs((l[1]/-l[2])/sTanY) < 0.9;
@@ -116,15 +141,33 @@ function loop(t) {
         ctx.save(); ctx.translate(ax, ay); ctx.rotate(a); ctx.beginPath(); ctx.moveTo(18, 0); ctx.lineTo(-10, -12); ctx.lineTo(-10, 12); ctx.closePath();
         ctx.fillStyle = 'rgba(80,240,255,.95)'; ctx.fill(); ctx.restore();
       }
-      if (bestA < 4*D2R && steady && t - lastShot > 700) {
-        capture(R); best.done = true; lastShot = t; flash = t;
-        if (navigator.vibrate) navigator.vibrate(30);
+      const way = (big) => Math.abs(l[0]) > Math.abs(l[1]) ? (l[0] > 0 ? (big ? 'Turn right' : 'A little more right') : (big ? 'Turn left' : 'A little more left'))
+                                                          : (l[1] > 0 ? (big ? 'Tilt up' : 'A little higher') : (big ? 'Tilt down' : 'A little lower'));
+      let ready = false, Rshot = R;
+      if (bestA > 9*D2R) { guide = way(true); lastAlign = null; }
+      else if (!rollOk) guide = roll > 0 ? 'Straighten: rotate phone clockwise' : 'Straighten: rotate phone counterclockwise';
+      else {
+        if (refs.length && t - lastAlignT > 140) { lastAlignT = t; lastAlign = checkAlign(R, liveGray(), refs); }
+        const trusted = lastAlign && lastAlign.score > 0.6 && lastAlign.n >= 120;
+        if (trusted) {
+          const ex = lastAlign.dYaw/D2R, ey = lastAlign.dPitch/D2R;
+          if (Math.abs(ex) > 1.2 || Math.abs(ey) > 1.2)
+            guide = Math.abs(ex) >= Math.abs(ey) ? (ex < 0 ? 'Move left a little' : 'Move right a little') : (ey < 0 ? 'Move up a little' : 'Move down a little');
+          else { ready = true; Rshot = correctR(R, lastAlign); }
+        } else if (bestA < 4*D2R) ready = true;
+        else guide = way(false);
+        if (ready && !steady) { guide = 'Hold still'; ready = false; }
+        if (ready && t - lastShot > 700) {
+          capture(Rshot); best.done = true; lastShot = t; flash = t; lastAlign = null; guide = 'Got it';
+          if (navigator.vibrate) navigator.vibrate(30);
+        }
       }
     }
+    $('guide').textContent = guide;
     const n = targets.filter(x => x.done).length;
     const NAMES = ['Around', 'Around', 'Around', 'Around', 'Around', 'Up', 'Up', 'Up', 'Down', 'Down', 'Down'];
     const nextName = best ? NAMES[targets.indexOf(best)] : '';
-    $('top').textContent = n === targets.length ? 'All done!' : `${nextName}: shot ${n+1} of ${targets.length}` + (bestA < 4*D2R && !steady ? ' (hold still)' : '');
+    $('top').textContent = n === targets.length ? 'All done!' : `${nextName}: shot ${n+1} of ${targets.length}`;
     $('finish').disabled = frames.length < 5;
     if (n === targets.length) { finish(); return; }
   }
@@ -134,7 +177,7 @@ function loop(t) {
 }
 
 async function finish() {
-  running = false; removeEventListener('deviceorientation', onOri);
+  running = false; $('guide').textContent = ''; removeEventListener('deviceorientation', onOri);
   if (stream) stream.getTracks().forEach(tr => tr.stop());
   $('result').style.display = 'flex'; $('view').style.display = 'none'; $('dl').style.display = 'none'; $('prev').removeAttribute('src');
   const W = 2048, H = 1024;
