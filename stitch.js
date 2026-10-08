@@ -31,6 +31,7 @@ export function dirFromYawPitch(yaw, pitch) {
   return [c*Math.sin(yaw), Math.sin(pitch), -c*Math.cos(yaw)];
 }
 export function makeTargets(yaw0, mode = 'six') {
+  if (mode === 'four') return [0, 90, 180, 270].map(y => ({ d: dirFromYawPitch(yaw0 + y*D2R, 0), done: false }));
   if (mode === 'six') return [[0, 0], [90, 0], [180, 0], [270, 0], [0, 88], [0, -88]]
     .map(([y, p]) => ({ d: dirFromYawPitch(yaw0 + y*D2R, p*D2R), done: false }));
   const t = [];
@@ -129,6 +130,7 @@ export async function stitch(frames, W, H, onProgress) {
     soft[k] = tot ? [...m].map(([f, c]) => [f, c/tot]) : null;
   }
   // 4) full-resolution render
+  const hasPoles = F.some(f => Math.abs(f.fy) > 0.7), rowCov = new Float32Array(H);
   const out = new Uint8ClampedArray(W*H*4), px3 = new Float32Array(3);
   for (let py = 0; py < H; py++) {
     const th = Math.PI*(py+0.5)/H, st = Math.sin(th), ct = Math.cos(th), cy = Math.min(lh-1, (py/S)|0);
@@ -138,7 +140,7 @@ export async function stitch(frames, W, H, onProgress) {
       const o = (py*W + px)*4, sw = soft[cy*lw + Math.min(lw-1, (px/S)|0)];
       let r = 0, g = 0, b = 0, ws = 0;
       if (sw) for (const [fi, w] of sw) { const p = proj(F[fi], dx, dy, dz); if (!p) continue; sampleAt(F[fi], p[0], p[1], px3, 0); r += px3[0]*w; g += px3[1]*w; b += px3[2]*w; ws += w; }
-      if (ws === 0) { // gap: use the nearest photo, stretched
+      if (ws === 0 && hasPoles) { // gap: use the nearest photo, stretched
         let nf = null, nd = 0.05; for (const f of F) { const d = dx*f.fx + dy*f.fy + dz*f.fz; if (d > nd) { nd = d; nf = f; } }
         if (nf) {
           const R = nf.R, lz = Math.min(-0.05, R[2]*dx + R[5]*dy + R[8]*dz);
@@ -150,9 +152,29 @@ export async function stitch(frames, W, H, onProgress) {
       if (ws > 0) { out[o] = r/ws; out[o+1] = g/ws; out[o+2] = b/ws; rs += out[o]; gs += out[o+1]; bs += out[o+2]; cnt++; } else miss.push(o);
       out[o+3] = 255;
     }
-    const ar = cnt ? rs/cnt : 12, ag = cnt ? gs/cnt : 14, ab = cnt ? bs/cnt : 22;
+    rowCov[py] = cnt/W;
+    const ar = cnt ? rs/cnt : 0, ag = cnt ? gs/cnt : 0, ab = cnt ? bs/cnt : 0;
     for (const o of miss) { out[o] = ar; out[o+1] = ag; out[o+2] = ab; }
     if (py % 32 === 0) { say(0.4 + 0.6*py/H); await yieldUI(); }
+  }
+  // Without up/down shots, keep only the rows every photo covers and fade smoothly into dark above and below.
+  if (!hasPoles) {
+    let top = H >> 1, bot = H >> 1;
+    while (top > 0 && rowCov[top-1] >= 0.995) top--;
+    while (bot < H-1 && rowCov[bot+1] >= 0.995) bot++;
+    top = Math.min(H >> 1, top + 6); bot = Math.max(H >> 1, bot - 6);
+    if (rowCov[H >> 1] >= 0.995) {
+      const avgOf = r => { let s = [0, 0, 0]; for (let px = 0; px < W; px++) for (let c = 0; c < 3; c++) s[c] += out[(r*W+px)*4+c]; return s.map(v => v/W); };
+      const aTop = avgOf(top), aBot = avgOf(bot), dark = [8, 9, 14], span = H*0.14;
+      for (let py = 0; py < H; py++) {
+        if (py >= top && py <= bot) continue;
+        const src = py < top ? top : bot, avg = py < top ? aTop : aBot, t = Math.min(1, Math.abs(py - src)/span);
+        for (let px = 0; px < W; px++) {
+          const o = (py*W + px)*4, so = (src*W + px)*4;
+          for (let c = 0; c < 3; c++) { const m = out[so+c]*(1 - Math.min(1, t*10)) + avg[c]*Math.min(1, t*10); out[o+c] = m*(1-t) + dark[c]*t; }
+        }
+      }
+    }
   }
   say(1);
   return out;

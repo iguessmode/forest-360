@@ -24,7 +24,7 @@ a{color:#9ff}
 <div id="bottom" class="panel"><button id="finish" disabled>Finish and stitch</button></div>
 <div id="start">
   <h2 style="margin:0">Take your own 360</h2>
-  <p>Just 6 shots: front, right, back, left, up and down. Turn your phone sideways, hold it out in front of you, and keep it in the same spot while you walk around it. Line up the circle with each glowing dot and hold still. It snaps each photo by itself.</p>
+  <p>Just 4 shots: front, right, back and left. Turn your phone sideways, hold it out in front of you, and keep it in the same spot while you walk around it. Line up the circle with each glowing dot and hold still. It snaps each photo by itself.</p>
   <button id="go">Start</button>
   <p id="err" style="color:#f99"></p>
   <a href="index.html">Back to the forest</a>
@@ -59,7 +59,7 @@ $('go').onclick = async () => {
     addEventListener('deviceorientation', onOri);
     addEventListener('orientationchange', onScreen); onScreen();
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-    // Six shots only cover everything with the ultra wide (0.5x) lens, so switch to it when the phone has one.
+    // Few shots only cover everything with the ultra wide (0.5x) lens, so switch to it when the phone has one.
     try {
       const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
       const uw = cams.find(d => /ultra ?wide/i.test(d.label) && !/front/i.test(d.label));
@@ -92,7 +92,7 @@ function loop(t) {
   const cx = W/2, cy = H/2;
   if (ori && v.videoWidth) {
     const R = quatToMatrix(quatFromDevice(ori.alpha, ori.beta, ori.gamma, screenAngle)), f = forwardOf(R);
-    if (!targets.length) targets = makeTargets(Math.atan2(f[0], -f[2]), 'six');
+    if (!targets.length) targets = makeTargets(Math.atan2(f[0], -f[2]), 'four');
     hist.push([t, f]); while (hist.length && t - hist[0][0] > 450) hist.shift();
     const steady = hist.length > 4 && ang(hist[0][1], f) < 1.3*D2R;
     const [tx, ty] = cameraTans(v.videoWidth, v.videoHeight, LONG_FOV);
@@ -122,7 +122,7 @@ function loop(t) {
       }
     }
     const n = targets.filter(x => x.done).length;
-    const NAMES = ['Front', 'Right', 'Back', 'Left', 'Up', 'Down'];
+    const NAMES = ['Front', 'Right', 'Back', 'Left'];
     const nextName = best ? NAMES[targets.indexOf(best)] : '';
     $('top').textContent = n === targets.length ? 'All done!' : `${nextName}: shot ${n+1} of ${targets.length}` + (bestA < 4*D2R && !steady ? ' (hold still)' : '');
     $('finish').disabled = frames.length < 4;
