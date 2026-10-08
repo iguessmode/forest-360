@@ -40,7 +40,7 @@ a{color:#9ff}
   </div>
 </div>
 <script type="module">
-import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js';
+import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js?v=11';
 const $ = id => document.getElementById(id);
 let LONG_FOV = +(new URLSearchParams(location.search).get('fov') || 64), wide = false;
 const v = $('v'), ov = $('ov'), ctx = ov.getContext('2d');
