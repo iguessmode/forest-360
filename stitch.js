@@ -31,6 +31,9 @@ export function dirFromYawPitch(yaw, pitch) {
   return [c*Math.sin(yaw), Math.sin(pitch), -c*Math.cos(yaw)];
 }
 export function makeTargets(yaw0, mode = 'six') {
+  if (mode === 'eleven') return [
+      ...[0, 72, 144, 216, 288].map(y => [y, 0]), ...[0, 120, 240].map(y => [y, 65]), ...[60, 180, 300].map(y => [y, -65])]
+    .map(([y, p]) => ({ d: dirFromYawPitch(yaw0 + y*D2R, p*D2R), done: false }));
   if (mode === 'four') return [0, 90, 180, 270].map(y => ({ d: dirFromYawPitch(yaw0 + y*D2R, 0), done: false }));
   if (mode === 'six') return [[0, 0], [90, 0], [180, 0], [270, 0], [0, 88], [0, -88]]
     .map(([y, p]) => ({ d: dirFromYawPitch(yaw0 + y*D2R, p*D2R), done: false }));
@@ -82,6 +85,24 @@ export async function stitch(frames, W, H, onProgress) {
       cand[cy*lw + cx] = list;
     }
     if (cy % 16 === 0) { say(0.15*cy/lh); await yieldUI(); }
+  }
+  // 1b) even out brightness between photos (phones change exposure from shot to shot)
+  const gain = new Float32Array(F.length).fill(1);
+  {
+    const pr = new Map();
+    for (const list of cand) if (list.length >= 2) for (let a = 0; a < list.length; a++) for (let b = a+1; b < list.length; b++) {
+      const A = list[a], B = list[b], key = A.f*1000 + B.f;
+      const d = Math.log(A.r + A.g + A.b + 3) - Math.log(B.r + B.g + B.b + 3);
+      const e = pr.get(key) || { i: A.f, j: B.f, s: 0, n: 0 }; e.s += d; e.n++; pr.set(key, e);
+    }
+    const rel = [...pr.values()].filter(e => e.n > 20), lg = new Float32Array(F.length);
+    for (let it = 0; it < 100; it++) for (let i = 0; i < F.length; i++) {
+      let num = 0, den = 2;
+      for (const r of rel) { const d = r.s/r.n, w = r.n; if (r.i === i) { num += w*(lg[r.j] - d); den += w; } else if (r.j === i) { num += w*(lg[r.i] + d); den += w; } }
+      lg[i] = num/den;
+    }
+    for (let i = 0; i < F.length; i++) gain[i] = Math.exp(lg[i]);
+    for (const list of cand) for (const c of list) { const g = gain[c.f]; c.r *= g; c.g *= g; c.b *= g; }
   }
   // 2) choose one photo per cell: prefer photo centres and what most photos agree on (drops things that moved),
   //    and move cuts to where photos agree
@@ -139,14 +160,14 @@ export async function stitch(frames, W, H, onProgress) {
       const ph = 2*Math.PI*(px+0.5)/W, dx = Math.cos(ph)*st, dy = ct, dz = Math.sin(ph)*st;
       const o = (py*W + px)*4, sw = soft[cy*lw + Math.min(lw-1, (px/S)|0)];
       let r = 0, g = 0, b = 0, ws = 0;
-      if (sw) for (const [fi, w] of sw) { const p = proj(F[fi], dx, dy, dz); if (!p) continue; sampleAt(F[fi], p[0], p[1], px3, 0); r += px3[0]*w; g += px3[1]*w; b += px3[2]*w; ws += w; }
+      if (sw) for (const [fi, w] of sw) { const p = proj(F[fi], dx, dy, dz); if (!p) continue; sampleAt(F[fi], p[0], p[1], px3, 0); const gw = w*gain[fi]; r += px3[0]*gw; g += px3[1]*gw; b += px3[2]*gw; ws += w; }
       if (ws === 0 && hasPoles) { // gap: use the nearest photo, stretched
         let nf = null, nd = 0.05; for (const f of F) { const d = dx*f.fx + dy*f.fy + dz*f.fz; if (d > nd) { nd = d; nf = f; } }
         if (nf) {
           const R = nf.R, lz = Math.min(-0.05, R[2]*dx + R[5]*dy + R[8]*dz);
           const xn = Math.max(-0.999, Math.min(0.999, (R[0]*dx + R[3]*dy + R[6]*dz)/(-lz)/nf.tanX));
           const yn = Math.max(-0.999, Math.min(0.999, (R[1]*dx + R[4]*dy + R[7]*dz)/(-lz)/nf.tanY));
-          sampleAt(nf, xn, yn, px3, 0); r = px3[0]; g = px3[1]; b = px3[2]; ws = 1;
+          sampleAt(nf, xn, yn, px3, 0); const gn = gain[F.indexOf(nf)]; r = px3[0]*gn; g = px3[1]*gn; b = px3[2]*gn; ws = 1;
         }
       }
       if (ws > 0) { out[o] = r/ws; out[o+1] = g/ws; out[o+2] = b/ws; rs += out[o]; gs += out[o+1]; bs += out[o+2]; cnt++; } else miss.push(o);
