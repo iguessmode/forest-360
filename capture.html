@@ -24,7 +24,7 @@ a{color:#9ff}
 <div id="bottom" class="panel"><button id="finish" disabled>Finish and stitch</button></div>
 <div id="start">
   <h2 style="margin:0">Take your own 360</h2>
-  <p>Hold your phone out in front of you and keep it in the same spot while you walk around it, like the phone is the center of a circle. Don't swing it around your body. Line up the circle with each glowing dot and hold still. It snaps each photo by itself. Go all the way around, then up and down.</p>
+  <p>Just 6 shots: front, right, back, left, up and down. Turn your phone sideways, hold it out in front of you, and keep it in the same spot while you walk around it. Line up the circle with each glowing dot and hold still. It snaps each photo by itself.</p>
   <button id="go">Start</button>
   <p id="err" style="color:#f99"></p>
   <a href="index.html">Back to the forest</a>
@@ -43,7 +43,7 @@ a{color:#9ff}
 import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js';
 import {refine} from './refine.js';
 const $ = id => document.getElementById(id);
-const LONG_FOV = +(new URLSearchParams(location.search).get('fov') || 64);
+let LONG_FOV = +(new URLSearchParams(location.search).get('fov') || 64), wide = false;
 const v = $('v'), ov = $('ov'), ctx = ov.getContext('2d');
 let ori = null, screenAngle = 0, targets = [], frames = [], hist = [], running = false, lastShot = 0, flash = 0, stream = null;
 const grab = document.createElement('canvas'), gctx = grab.getContext('2d', { willReadFrequently: true });
@@ -60,6 +60,16 @@ $('go').onclick = async () => {
     addEventListener('deviceorientation', onOri);
     addEventListener('orientationchange', onScreen); onScreen();
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    // Six shots only cover everything with the ultra wide (0.5x) lens, so switch to it when the phone has one.
+    try {
+      const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+      const uw = cams.find(d => /ultra ?wide/i.test(d.label) && !/front/i.test(d.label));
+      if (uw) {
+        const s2 = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: uw.deviceId }, width: { ideal: 1440 }, height: { ideal: 1080 }, aspectRatio: { ideal: 4/3 } }, audio: false });
+        stream.getTracks().forEach(tr => tr.stop()); stream = s2; wide = true;
+        if (!new URLSearchParams(location.search).get('fov')) LONG_FOV = 100;
+      }
+    } catch (e) { console.warn('ultra wide not available', e); }
     v.srcObject = stream; await v.play();
     targets = []; frames = []; hist = [];
     $('start').style.display = 'none'; running = true; requestAnimationFrame(loop);
@@ -68,7 +78,7 @@ $('go').onclick = async () => {
 };
 
 function capture(R) {
-  const vw = v.videoWidth, vh = v.videoHeight, s = 800 / Math.max(vw, vh);
+  const vw = v.videoWidth, vh = v.videoHeight, s = Math.min(1, 1280 / Math.max(vw, vh));
   const w = Math.round(vw*s), h = Math.round(vh*s);
   grab.width = w; grab.height = h; gctx.drawImage(v, 0, 0, w, h);
   const [tanX, tanY] = cameraTans(w, h, LONG_FOV);
@@ -83,7 +93,7 @@ function loop(t) {
   const cx = W/2, cy = H/2;
   if (ori && v.videoWidth) {
     const R = quatToMatrix(quatFromDevice(ori.alpha, ori.beta, ori.gamma, screenAngle)), f = forwardOf(R);
-    if (!targets.length) targets = makeTargets(Math.atan2(f[0], -f[2]));
+    if (!targets.length) targets = makeTargets(Math.atan2(f[0], -f[2]), 'six');
     hist.push([t, f]); while (hist.length && t - hist[0][0] > 450) hist.shift();
     const steady = hist.length > 4 && ang(hist[0][1], f) < 1.3*D2R;
     const [tx, ty] = cameraTans(v.videoWidth, v.videoHeight, LONG_FOV);
@@ -113,8 +123,10 @@ function loop(t) {
       }
     }
     const n = targets.filter(x => x.done).length;
-    $('top').textContent = n === targets.length ? 'All done!' : `Photo ${n} of ${targets.length}` + (bestA < 4*D2R && !steady ? ' (hold still)' : '');
-    $('finish').disabled = frames.length < 6;
+    const NAMES = ['Front', 'Right', 'Back', 'Left', 'Up', 'Down'];
+    const nextName = best ? NAMES[targets.indexOf(best)] : '';
+    $('top').textContent = n === targets.length ? 'All done!' : `${nextName}: shot ${n+1} of ${targets.length}` + (bestA < 4*D2R && !steady ? ' (hold still)' : '');
+    $('finish').disabled = frames.length < 4;
     if (n === targets.length) { finish(); return; }
   }
   ctx.beginPath(); ctx.arc(cx, cy, 26, 0, Math.PI*2); ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.stroke();
@@ -135,7 +147,7 @@ async function finish() {
     const limit = new Promise((_, rej) => setTimeout(() => rej(new Error('it took too long, so I stitched without it')), 90000));
     let r; try { r = await Promise.race([refine(frames, LONG_FOV, { onProgress: m => { last = m; } }), limit]); } finally { clearInterval(tick); }
     use = r.frames;
-    note = r.pairs ? `Lined up ${r.aligned} of ${frames.length} photos.` : 'Could not find matching details between photos.';
+    note = (r.pairs ? `Lined up ${r.aligned} of ${frames.length} photos.` : 'Could not find matching details between photos.') + (wide ? '' : ' Your phone has no ultra wide lens, so there may be gaps.');
   } catch (e) { note = 'Alignment did not run: ' + ((e && e.message) || e); }
   const px = await stitch(use, W, H, p => { $('rmsg').textContent = `Stitching your 360... ${Math.round(p*100)}%`; });
   const c = document.createElement('canvas'); c.width = W; c.height = H;

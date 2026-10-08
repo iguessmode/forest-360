@@ -61,7 +61,7 @@ export async function refine(frames, longFovGuess, opts = {}) {
   const cv = opts.cv || await preloadCv();
   const n = frames.length; if (n < 2) return { frames, fov: longFovGuess, residual: null };
   say('Finding details in your photos');
-  const orb = new cv.ORB(800), empty = new cv.Mat();
+  const orb = new cv.ORB(n <= 8 ? 4000 : 800), empty = new cv.Mat();
   const feats = [];
   for (let i = 0; i < n; i++) {
     const f = frames[i];
@@ -78,7 +78,7 @@ export async function refine(frames, longFovGuess, opts = {}) {
   const fwd = frames.map(f => [-f.R[2], -f.R[5], -f.R[8]]);
   const pairs = [];
   for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) {
-    if (fwd[i][0]*fwd[j][0] + fwd[i][1]*fwd[j][1] + fwd[i][2]*fwd[j][2] < 0.34) continue;
+    if (fwd[i][0]*fwd[j][0] + fwd[i][1]*fwd[j][1] + fwd[i][2]*fwd[j][2] < -0.1) continue;
     const A = feats[i], B = feats[j]; if (A.desc.rows < 10 || B.desc.rows < 10) continue;
     const knn = new cv.DMatchVectorVector(); bf.knnMatch(A.desc, B.desc, knn, 2);
     const fi = frames[i], fj = frames[j], [txi, tyi] = cameraTans(fi.w, fi.h, longFovGuess), [txj, tyj] = cameraTans(fj.w, fj.h, longFovGuess);
@@ -133,7 +133,7 @@ export async function refine(frames, longFovGuess, opts = {}) {
   say('Lining everything up');
   let best = null, bestL = longFovGuess;
   if (pairs.length) {
-    for (let L = 44; L <= 80; L += 3) { const r = solve(L, 6); if (!best || r.err < best.err) { best = r; bestL = L; } await new Promise(r => setTimeout(r, 0)); }
+    for (let L = 44; L <= 125; L += 3) { const r = solve(L, 6); if (!best || r.err < best.err) { best = r; bestL = L; } await new Promise(r => setTimeout(r, 0)); }
     const c0 = bestL; for (let L = c0 - 2; L <= c0 + 2; L += 1) { const r = solve(L, 10); if (r.err < best.err) { best = r; bestL = L; } await new Promise(r => setTimeout(r, 0)); }
     best = solve(bestL, 30);
   }

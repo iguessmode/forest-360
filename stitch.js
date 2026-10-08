@@ -30,7 +30,9 @@ export function dirFromYawPitch(yaw, pitch) {
   const c = Math.cos(pitch);
   return [c*Math.sin(yaw), Math.sin(pitch), -c*Math.cos(yaw)];
 }
-export function makeTargets(yaw0) {
+export function makeTargets(yaw0, mode = 'six') {
+  if (mode === 'six') return [[0, 0], [90, 0], [180, 0], [270, 0], [0, 88], [0, -88]]
+    .map(([y, p]) => ({ d: dirFromYawPitch(yaw0 + y*D2R, p*D2R), done: false }));
   const t = [];
   for (let i = 0; i < 16; i++) t.push(dirFromYawPitch(yaw0 + i*22.5*D2R, 0));
   for (let i = 0; i < 10; i++) t.push(dirFromYawPitch(yaw0 + (i*36+18)*D2R, 40*D2R));
@@ -49,9 +51,9 @@ export function cameraTans(w, h, longFovDeg) {
 export async function stitch(frames, W, H, onProgress) {
   const say = p => { if (onProgress) onProgress(p); };
   const yieldUI = () => new Promise(r => setTimeout(r, 0));
-  const F = frames.map(f => ({ ...f, fx: -f.R[2], fy: -f.R[5], fz: -f.R[8] }));
+  const F = frames.map(f => ({ ...f, fx: -f.R[2], fy: -f.R[5], fz: -f.R[8], cmin: 1/Math.sqrt(1 + f.tanX*f.tanX + f.tanY*f.tanY) - 0.02 }));
   function proj(f, dx, dy, dz) { // -> [xn, yn] in -1..1 or null
-    if (dx*f.fx + dy*f.fy + dz*f.fz < 0.6) return null;
+    if (dx*f.fx + dy*f.fy + dz*f.fz < f.cmin) return null;
     const R = f.R, lz = R[2]*dx + R[5]*dy + R[8]*dz; if (lz >= -0.05) return null;
     const xn = (R[0]*dx + R[3]*dy + R[6]*dz)/(-lz)/f.tanX, yn = (R[1]*dx + R[4]*dy + R[7]*dz)/(-lz)/f.tanY;
     return (xn <= -1 || xn >= 1 || yn <= -1 || yn >= 1) ? null : [xn, yn];
@@ -137,7 +139,7 @@ export async function stitch(frames, W, H, onProgress) {
       let r = 0, g = 0, b = 0, ws = 0;
       if (sw) for (const [fi, w] of sw) { const p = proj(F[fi], dx, dy, dz); if (!p) continue; sampleAt(F[fi], p[0], p[1], px3, 0); r += px3[0]*w; g += px3[1]*w; b += px3[2]*w; ws += w; }
       if (ws === 0) { // gap: use the nearest photo, stretched
-        let nf = null, nd = 0.5; for (const f of F) { const d = dx*f.fx + dy*f.fy + dz*f.fz; if (d > nd) { nd = d; nf = f; } }
+        let nf = null, nd = 0.05; for (const f of F) { const d = dx*f.fx + dy*f.fy + dz*f.fz; if (d > nd) { nd = d; nf = f; } }
         if (nf) {
           const R = nf.R, lz = Math.min(-0.05, R[2]*dx + R[5]*dy + R[8]*dz);
           const xn = Math.max(-0.999, Math.min(0.999, (R[0]*dx + R[3]*dy + R[6]*dz)/(-lz)/nf.tanX));
