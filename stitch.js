@@ -34,6 +34,7 @@ export function makeTargets(yaw0, mode = 'six') {
   if (mode === 'eleven') return [
       ...[0, 72, 144, 216, 288].map(y => [y, 0]), ...[0, 120, 240].map(y => [y, 65]), ...[60, 180, 300].map(y => [y, -65])]
     .map(([y, p]) => ({ d: dirFromYawPitch(yaw0 + y*D2R, p*D2R), done: false }));
+  if (mode === 'five') return [0, 72, 144, 216, 288].map(y => ({ d: dirFromYawPitch(yaw0 + y*D2R, 0), done: false }));
   if (mode === 'four') return [0, 90, 180, 270].map(y => ({ d: dirFromYawPitch(yaw0 + y*D2R, 0), done: false }));
   if (mode === 'six') return [[0, 0], [90, 0], [180, 0], [270, 0], [0, 88], [0, -88]]
     .map(([y, p]) => ({ d: dirFromYawPitch(yaw0 + y*D2R, p*D2R), done: false }));
@@ -178,23 +179,34 @@ export async function stitch(frames, W, H, onProgress) {
     for (const o of miss) { out[o] = ar; out[o+1] = ag; out[o+2] = ab; }
     if (py % 32 === 0) { say(0.4 + 0.6*py/H); await yieldUI(); }
   }
-  // Without up/down shots, keep only the rows every photo covers and fade smoothly into dark above and below.
+  // Without up/down shots: the top and bottom were never photographed, so stretch the edge of the photos
+  // smoothly up to one point straight above and below (the same way a 360 closes at the top), so it joins up.
   if (!hasPoles) {
     let top = H >> 1, bot = H >> 1;
     while (top > 0 && rowCov[top-1] >= 0.995) top--;
     while (bot < H-1 && rowCov[bot+1] >= 0.995) bot++;
-    top = Math.min(H >> 1, top + 6); bot = Math.max(H >> 1, bot - 6);
+    const IN = Math.round(H*0.03), MIX = Math.round(H*0.05);
+    top = Math.min(H >> 1, top + IN); bot = Math.max(H >> 1, bot - IN);
     if (rowCov[H >> 1] >= 0.995) {
-      const avgOf = r => { let s = [0, 0, 0]; for (let px = 0; px < W; px++) for (let c = 0; c < 3; c++) s[c] += out[(r*W+px)*4+c]; return s.map(v => v/W); };
-      const aTop = avgOf(top), aBot = avgOf(bot), dark = [8, 9, 14], span = H*0.14;
-      for (let py = 0; py < H; py++) {
-        if (py >= top && py <= bot) continue;
-        const src = py < top ? top : bot, avg = py < top ? aTop : aBot, t = Math.min(1, Math.abs(py - src)/span);
-        for (let px = 0; px < W; px++) {
-          const o = (py*W + px)*4, so = (src*W + px)*4;
-          for (let c = 0; c < 3; c++) { const m = out[so+c]*(1 - Math.min(1, t*10)) + avg[c]*Math.min(1, t*10); out[o+c] = m*(1-t) + dark[c]*t; }
+      const orig = out.slice();
+      const fill = (src, from, to, step, realEnd) => {
+        // circular prefix sums of the edge row so wide wrap-around blurs are cheap
+        const P = [new Float64Array(3*W + 1), new Float64Array(3*W + 1), new Float64Array(3*W + 1)];
+        for (let i = 0; i < 3*W; i++) { const o = (src*W + (i % W))*4; for (let c = 0; c < 3; c++) P[c][i+1] = P[c][i] + orig[o+c]; }
+        const avg = [0, 1, 2].map(c => P[c][W]/W), span = Math.abs(to - from) + 1;
+        for (let py = from, k = 1; py !== to + step; py += step, k++) {
+          const t = k/span, r = Math.max(6, Math.round(W/96 + t*W/3)), wp = t*t*(3 - 2*t);
+          // near the photos, fade from the real picture into the fill so there is no visible line
+          const real = (step < 0 ? py >= realEnd : py <= realEnd) ? Math.max(0, 1 - k/MIX) : 0;
+          for (let px = 0; px < W; px++) {
+            const lo = W + px - r, hi = W + px + r + 1, o = (py*W + px)*4;
+            for (let c = 0; c < 3; c++) { const blur = (P[c][hi] - P[c][lo])/(hi - lo), f = blur*(1 - wp) + avg[c]*wp; out[o+c] = orig[o+c]*real + f*(1 - real); }
+          }
         }
-      }
+      };
+      const realTop = top - IN, realBot = bot + IN;
+      if (top > 0) fill(top, top - 1, 0, -1, realTop);
+      if (bot < H-1) fill(bot, bot + 1, H - 1, 1, realBot);
     }
   }
   say(1);

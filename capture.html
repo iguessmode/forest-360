@@ -24,7 +24,7 @@ a{color:#9ff}
 <div id="bottom" class="panel"><button id="finish" disabled>Finish and stitch</button></div>
 <div id="start">
   <h2 style="margin:0">Take your own 360</h2>
-  <p>11 quick shots: 5 around you, 3 tilted up and 3 tilted down, so the top and bottom join up. Hold your phone upright, keep it in the same spot and turn yourself around it. Line up the circle with each glowing dot and hold still. It snaps each photo by itself.</p>
+  <p>5 quick shots, straight around you. The top and bottom are closed up automatically. Hold your phone upright, keep it in the same spot and turn yourself around it. Line up the circle with each glowing dot and hold still. It snaps each photo by itself.</p>
   <button id="go">Start</button>
   <p id="err" style="color:#f99"></p>
   <a href="index.html">Back to the forest</a>
@@ -40,8 +40,8 @@ a{color:#9ff}
   </div>
 </div>
 <script type="module">
-import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js?v=12';
-import {LW, checkAlign, correctR} from './align.js?v=12';
+import {D2R, quatFromDevice, quatToMatrix, forwardOf, toLocal, makeTargets, cameraTans, stitch} from './stitch.js?v=13';
+import {LW, checkAlign, correctR} from './align.js?v=13';
 const $ = id => document.getElementById(id);
 let LONG_FOV = +(new URLSearchParams(location.search).get('fov') || 64), wide = false;
 const v = $('v'), ov = $('ov'), ctx = ov.getContext('2d');
@@ -111,7 +111,7 @@ function loop(t) {
   const cx = W/2, cy = H/2;
   if (ori && v.videoWidth) {
     const R = quatToMatrix(quatFromDevice(ori.alpha, ori.beta, ori.gamma, screenAngle)), f = forwardOf(R);
-    if (!targets.length) targets = makeTargets(Math.atan2(f[0], -f[2]), 'eleven');
+    if (!targets.length) targets = makeTargets(Math.atan2(f[0], -f[2]), 'five');
     hist.push([t, f]); while (hist.length && t - hist[0][0] > 450) hist.shift();
     const steady = hist.length > 4 && ang(hist[0][1], f) < 1.3*D2R;
     const [tx, ty] = cameraTans(v.videoWidth, v.videoHeight, LONG_FOV);
@@ -144,10 +144,10 @@ function loop(t) {
       }
     }
     const n = targets.filter(x => x.done).length;
-    const NAMES = ['Around', 'Around', 'Around', 'Around', 'Around', 'Up', 'Up', 'Up', 'Down', 'Down', 'Down'];
+    const NAMES = ['Around', 'Around', 'Around', 'Around', 'Around'];
     const nextName = best ? NAMES[targets.indexOf(best)] : '';
     $('top').textContent = n === targets.length ? 'All done!' : `${nextName}: shot ${n+1} of ${targets.length}` + (bestA < 4*D2R && !steady ? ' (hold still)' : '');
-    $('finish').disabled = frames.length < 5;
+    $('finish').disabled = frames.length < 3;
     if (n === targets.length) { finish(); return; }
   }
   ctx.beginPath(); ctx.arc(cx, cy, 26, 0, Math.PI*2); ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.stroke();
